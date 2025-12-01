@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token;
+use anchor_spl::{token};
 use anchor_spl::{ associated_token::AssociatedToken };
 use anchor_spl::token::{ TokenAccount, Transfer, Token, Mint, MintTo, Burn };
 use std::cmp::min;
@@ -7,9 +7,11 @@ declare_id!("F4dfAy46FYa11G28VkreEirfqdfPw3ptgmd8rwQffsYS");
 
 #[program]
 pub mod enswap_amm {
+
     use super::*;
 
     pub fn initialize_pool(ctx: Context<Initialize>, fee: u16) -> Result<()> {
+        require!(fee <= 10000, AmmError::InvalidFee);
         let pool = &mut ctx.accounts.pool;
         pool.fee_bps = fee;
         pool.mint_a = ctx.accounts.mint_a.key();
@@ -18,6 +20,14 @@ pub mod enswap_amm {
         pool.token_reserve_b = ctx.accounts.token_reserve_b.key();
         pool.lp_mint = ctx.accounts.lp_mint.key();
         pool.sign_authority_bump = ctx.bumps.pool_authority;
+        msg!("pool initialized succesfully");
+        msg!("mint_a: {}", pool.mint_a);
+        msg!("mint_b: {}", pool.mint_b);
+        msg!("reserve_a: {}", pool.token_reserve_a);
+        msg!("reserve_b: {}", pool.token_reserve_b);
+        msg!("lp_mint: {}", pool.lp_mint);
+        msg!("fee_bps: {}", pool.fee_bps);
+        msg!("sign_authority_bump: {}", pool.sign_authority_bump);
         Ok(())
     }
 
@@ -31,6 +41,7 @@ pub mod enswap_amm {
         // check if user has suffient funds
         require!(ctx.accounts.user_token_a.amount >= max_amount_a, AmmError::InsufficientFunds);
         require!(ctx.accounts.user_token_b.amount >= max_amount_b, AmmError::InsufficientFunds);
+        require!(max_amount_a > 0 && max_amount_b > 0, AmmError::InsufficientFunds);
         let reserve_a = &ctx.accounts.token_reserve_a;
         let reserve_b = &ctx.accounts.token_reserve_b;
         let signer = &ctx.accounts.signer;
@@ -200,7 +211,7 @@ pub mod enswap_amm {
 
         // // After swap:
         // new_reserve_in = reserve_in + amount_in_with_fee
-        let new_reserve_in = reserve_dst.amount.checked_add(amount_in_post_fee).unwrap();
+        let new_reserve_dst = reserve_dst.amount.checked_add(amount_in_post_fee).unwrap();
         // new_reserve_out = ?
 
         // // Keep k constant:
@@ -217,7 +228,7 @@ pub mod enswap_amm {
         let calculated_amount_out = (reserve_src.amount as u128)
             .checked_mul(amount_in_post_fee as u128)
             .unwrap()
-            .checked_div(new_reserve_in as u128)
+            .checked_div(new_reserve_dst as u128)
             .unwrap() as u64;
 
         //  check if the slippage condition is met i.e is the calculated_amount_out >= min_amount_out
@@ -249,6 +260,58 @@ pub mod enswap_amm {
 
         Ok(())
     }
+
+    pub fn withdraw_liquidity(ctx: Context<WithdrawLiquidity>, lp_tokens:u64, min_amount_a:u64, min_amount_b: u64) -> Result<()> {
+        let pool = &mut ctx.accounts.pool;
+        let total_lp_supply = ctx.accounts.lp_mint.supply;
+        require!(lp_tokens > 0, AmmError::InsufficientFunds);
+        require!(ctx.accounts.user_lp_token_vault.amount >= lp_tokens, AmmError::InsufficientFunds);
+        //lp_tokens*reserve_a/total_lp_supply
+        let amount_a = (lp_tokens as u128).checked_mul(ctx.accounts.reserve_a.amount as u128).unwrap().checked_div(total_lp_supply as u128).unwrap() as u64;
+        let amount_b = (lp_tokens as u128).checked_mul(ctx.accounts.reserve_b.amount as u128).unwrap().checked_div(total_lp_supply as u128).unwrap() as u64;
+        require!(amount_a >= min_amount_a, AmmError::SlippageExceeded);
+        require!(amount_b >= min_amount_b, AmmError::SlippageExceeded);
+
+        let ctx_program = ctx.accounts.token_program.to_account_info();
+        let ctx_accounts = Burn{
+            mint: ctx.accounts.lp_mint.to_account_info(),
+            from: ctx.accounts.user_lp_token_vault.to_account_info(),
+            authority: ctx.accounts.signer.to_account_info()
+        };
+        let cpi_ctx = CpiContext::new(ctx_program, ctx_accounts);
+        token::burn(cpi_ctx, lp_tokens)?;
+
+        let ctx_program = ctx.accounts.token_program.to_account_info();
+        let ctx_accounts = Transfer{
+            to: ctx.accounts.user_token_a.to_account_info(),
+            from: ctx.accounts.reserve_a.to_account_info(),
+            authority: ctx.accounts.pool_authority.to_account_info()
+        };
+        
+        let authority_bump = pool.sign_authority_bump;
+        let key = pool.key();
+        let seeds = &[
+            b"authority",
+            key.as_ref(),
+            &[authority_bump]
+        ];
+        let signer_seeds = &[&seeds[..]];
+
+        let cpi_ctx = CpiContext::new_with_signer(ctx_program, ctx_accounts, signer_seeds);
+        token::transfer(cpi_ctx, amount_a)?;
+
+        let ctx_program = ctx.accounts.token_program.to_account_info();
+        let ctx_accounts = Transfer{
+            to: ctx.accounts.user_token_b.to_account_info(),
+            from: ctx.accounts.reserve_b.to_account_info(),
+            authority: ctx.accounts.pool_authority.to_account_info()
+        };
+        
+        let cpi_ctx = CpiContext::new_with_signer(ctx_program, ctx_accounts, signer_seeds);
+        token::transfer(cpi_ctx, amount_b)?;
+        Ok(())
+    }
+    
 }
 
 #[derive(Accounts)]
@@ -386,6 +449,40 @@ pub struct Swap<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
+#[derive(Accounts)]
+pub struct WithdrawLiquidity <'info>{
+    #[account(address = pool.mint_a)]
+    pub mint_a: Account<'info, Mint>,
+    #[account(address = pool.mint_b)]
+    pub mint_b: Account<'info, Mint>,
+    #[account(mut, seeds = [b"pool", mint_a.key().as_ref(), mint_b.key().as_ref()], bump)]
+    pub pool: Account<'info, Pool>,
+    ///CHECK: pda used just for signing purposes
+    #[account(mut, seeds=[b"authority", pool.key().as_ref()], bump)]
+    pub pool_authority: UncheckedAccount<'info>,
+    #[account(mut, address=pool.token_reserve_a, constraint = reserve_a.owner == pool_authority.key() @ AmmError::Unauthorized)]
+    pub reserve_a: Account<'info, TokenAccount>,
+    #[account(mut, address=pool.token_reserve_b, constraint = reserve_b.owner == pool_authority.key() @ AmmError::Unauthorized)]
+    pub reserve_b: Account<'info, TokenAccount>,
+    #[account(mut, seeds=[b"lp_mint", pool.key().as_ref()], bump)]
+    pub lp_mint: Account<'info, Mint>,
+    #[account(mut,
+        constraint = user_lp_token_vault.owner == signer.key() @ AmmError::Unauthorized,
+        constraint = user_lp_token_vault.mint == lp_mint.key() @ AmmError::InvalidMint)]
+        pub user_lp_token_vault: Account<'info, TokenAccount>,
+        #[account(mut,
+        associated_token::mint=mint_a, associated_token::authority=signer)]
+        pub user_token_a: Account<'info, TokenAccount>,
+        #[account(mut,
+        associated_token::mint=mint_b, associated_token::authority=signer)]
+        pub user_token_b: Account<'info, TokenAccount>,
+        #[account(mut)]
+        signer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+}
+
+
 // Common Data Sizes:
 //     Pubkey = 32 bytes
 //     u64 = 8 bytes
@@ -407,6 +504,8 @@ pub struct Pool {
 
 #[error_code]
 pub enum AmmError {
+    #[msg("Extremely excessive fee amount")]
+    InvalidFee,
     #[msg("Invalid mint for this account")]
     InvalidMint,
     #[msg("Insufficient Funds")]
