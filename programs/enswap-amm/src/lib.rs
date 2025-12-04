@@ -423,13 +423,13 @@ pub struct Swap<'info> {
         constraint = token_reserve_src.key() == pool.token_reserve_a || token_reserve_src.key() == pool.token_reserve_b @ AmmError::InvalidReserve,
         constraint = token_reserve_src.key() != token_reserve_dst.key() @ AmmError::SameReserve,
         constraint = token_reserve_src.owner == pool_authority.key() @ AmmError::Unauthorized,
-        constraint = token_reserve_src.mint == user_src_token_acc.mint @ AmmError::InvalidMint)]
+        constraint = token_reserve_src.mint == user_dst_token_acc.mint @ AmmError::InvalidMint)]
     pub token_reserve_src: Account<'info, TokenAccount>,
     #[account(mut,
         constraint = token_reserve_dst.key() == pool.token_reserve_a || token_reserve_dst.key() == pool.token_reserve_b @ AmmError::InvalidReserve,
         constraint = token_reserve_dst.key() != token_reserve_src.key() @ AmmError::SameReserve,
         constraint = token_reserve_dst.owner == pool_authority.key() @ AmmError::Unauthorized,
-        constraint = token_reserve_dst.mint == user_dst_token_acc.mint @ AmmError::InvalidMint)]
+        constraint = token_reserve_dst.mint == user_src_token_acc.mint @ AmmError::InvalidMint)]
     pub token_reserve_dst: Account<'info, TokenAccount>,
     #[account(mut,
         constraint = user_src_token_acc.key() != user_dst_token_acc.key() @ AmmError::SameAccount,
@@ -466,9 +466,7 @@ pub struct WithdrawLiquidity <'info>{
     pub reserve_b: Account<'info, TokenAccount>,
     #[account(mut, seeds=[b"lp_mint", pool.key().as_ref()], bump)]
     pub lp_mint: Account<'info, Mint>,
-    #[account(mut,
-        constraint = user_lp_token_vault.owner == signer.key() @ AmmError::Unauthorized,
-        constraint = user_lp_token_vault.mint == lp_mint.key() @ AmmError::InvalidMint)]
+    #[account(mut, associated_token::mint=lp_mint, associated_token::authority=signer)]
         pub user_lp_token_vault: Account<'info, TokenAccount>,
         #[account(mut,
         associated_token::mint=mint_a, associated_token::authority=signer)]
@@ -480,6 +478,7 @@ pub struct WithdrawLiquidity <'info>{
         signer: Signer<'info>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
 
