@@ -14,8 +14,7 @@ pub mod enswap_amm {
       instructions::initialize_pool::handler(ctx, fee)
     }
 
-    pub fn add_liquidity(ctx: Context<AddLiquidity>, max_amount_a: u64, max_amount_b: u64, min_lp_tokens: u64
-    ) -> Result<()> {
+    pub fn add_liquidity(ctx: Context<AddLiquidity>, max_amount_a: u64, max_amount_b: u64, min_lp_tokens: u64) -> Result<()> {
        instructions::add_liquidity::handler(ctx, max_amount_a, max_amount_b, min_lp_tokens)
     }
 
